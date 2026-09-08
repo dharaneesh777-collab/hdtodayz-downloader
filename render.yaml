@@ -1,7 +1,8 @@
-﻿services:
+services:
   - type: web
     name: hdtodayz-downloader
-    runtime: docker
+    env: docker
+    dockerfilePath: ./Dockerfile
     plan: free
     region: oregon
     envVars:
