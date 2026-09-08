@@ -226,6 +226,44 @@ async def api_hls_accel_aud_seg(sid: str, idx: int):
     return RawResponse(content=data, media_type="video/mp2t")
 
 
+@app.get("/api/debug-upstream")
+async def api_debug_upstream(tmdb_id: int = 1418, s: int = 1, e: int = 1):
+    import urllib.request, urllib.error
+    import aiohttp
+    
+    url = f"https://vixsrc.to/api/tv/{tmdb_id}/{s}/{e}"
+    res = {"target": url}
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": f"https://vixsrc.to/tv/{tmdb_id}/{s}/{e}",
+        "Origin": "https://vixsrc.to",
+        "Accept": "application/json, text/plain, */*",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
+    
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            res["urllib"] = {"status": r.status, "body": r.read().decode(errors="replace")[:400]}
+    except urllib.error.HTTPError as ex:
+        res["urllib"] = {"status": ex.code, "headers": dict(ex.headers), "body": ex.read().decode(errors="replace")[:400]}
+    except Exception as ex:
+        res["urllib"] = {"error": str(ex)}
+        
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                text = await r.text()
+                res["aiohttp"] = {"status": r.status, "headers": dict(r.headers), "body": text[:400]}
+    except Exception as ex:
+        res["aiohttp"] = {"error": str(ex)}
+        
+    return res
+
+
 @app.get("/api/download/stream")
 async def api_direct_stream_download(
     request: Request,
