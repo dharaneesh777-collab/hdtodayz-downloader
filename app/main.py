@@ -23,6 +23,7 @@ from app.accelerator import accelerator_manager
 from app.extractor import (
     resolve_media_info,
     fetch_tv_season_episodes,
+    extract_stream,
     extract_vixsrc_stream,
     check_stream_available,
     search_media,
@@ -134,7 +135,12 @@ async def api_resolve(req: ResolveRequest):
         stream_info = None
         if media_info["media_type"] == "movie":
             try:
-                stream_info = extract_vixsrc_stream(media_info["tmdb_id"], "movie")
+                stream_info = extract_stream(
+                    tmdb_id=media_info["tmdb_id"],
+                    media_type="movie",
+                    title=media_info.get("title", ""),
+                    year=media_info.get("year", ""),
+                )
             except Exception as e:
                 # If stream preview fails, still allow resolving metadata
                 stream_info = {"error": str(e), "video_qualities": [], "audio_tracks": []}
@@ -161,10 +167,19 @@ async def api_stream_info(
     media_type: str = Query("movie"),
     season: int = Query(1),
     episode: int = Query(1),
+    title: str = Query(""),
+    year: str = Query(""),
 ):
     """Extract stream qualities and audio tracks for given media."""
     try:
-        info = extract_vixsrc_stream(tmdb_id, media_type, season, episode)
+        info = extract_stream(
+            tmdb_id=tmdb_id,
+            media_type=media_type,
+            season=season,
+            episode=episode,
+            title=title,
+            year=year,
+        )
         return {"success": True, "stream_info": info}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -190,6 +205,14 @@ async def api_hls_accel_key(sid: str):
     if not sess or not sess.key_bytes:
         raise HTTPException(status_code=404, detail="Key not found")
     return RawResponse(content=sess.key_bytes, media_type="application/octet-stream")
+
+
+@app.get("/api/hls_accel/{sid}/init.mp4")
+async def api_hls_accel_init(sid: str):
+    sess = accelerator_manager.get_session(sid)
+    if not sess or not sess.init_bytes:
+        raise HTTPException(status_code=404, detail="Init segment not found")
+    return RawResponse(content=sess.init_bytes, media_type="video/mp4")
 
 
 @app.get("/api/hls_accel/{sid}/video.m3u8")
@@ -274,13 +297,22 @@ async def api_check_stream(
     media_type: str = Query("movie"),
     season: int = Query(1),
     episode: int = Query(1),
+    title: str = Query(""),
+    year: str = Query(""),
 ):
     """Preflight check to verify if a stream is accessible from this server."""
     try:
-        stream_info = extract_vixsrc_stream(tmdb_id, media_type, season, episode)
+        stream_info = extract_stream(
+            tmdb_id=tmdb_id,
+            media_type=media_type,
+            season=season,
+            episode=episode,
+            title=title,
+            year=year,
+        )
         return {
             "available": True,
-            "server": stream_info.get("server", "VixSrc"),
+            "server": stream_info.get("server", "Server 5 (VidKing)"),
             "qualities": [q.get("label") for q in stream_info.get("video_qualities", [])],
         }
     except Exception as ex:
@@ -290,12 +322,7 @@ async def api_check_stream(
             "available": False,
             "error": msg,
             "is_waf_blocked": is_waf,
-            "message": (
-                "Upstream streaming host blocked cloud datacenter IP (Cloudflare WAF HTTP 403). "
-                "Cloud platforms (Render / AWS) are restricted by the third-party host. "
-                "You can test high-speed downloading, in-flight MP4 remuxing, and multi-episode parallel downloads right now using the built-in 'Demo Showcase'!"
-                if is_waf else msg
-            ),
+            "message": msg,
         }
 
 
@@ -327,20 +354,22 @@ async def api_direct_stream_download(
     e = episode if episode else 1
 
     target_tmdb_id = tmdb_id
-    if target_tmdb_id != 999999 and not check_stream_available(target_tmdb_id, media_type, s, e):
+    if target_tmdb_id != 999999 and not check_stream_available(target_tmdb_id, media_type, s, e, title, year):
         candidates = search_media(title)
         for cand in candidates:
             if cand["id"] != target_tmdb_id and cand["media_type"] == media_type:
-                if check_stream_available(cand["id"], cand["media_type"], s, e):
+                if check_stream_available(cand["id"], cand["media_type"], s, e, cand["title"], cand.get("year", "")):
                     target_tmdb_id = cand["id"]
                     break
 
     try:
-        stream_info = extract_vixsrc_stream(
+        stream_info = extract_stream(
             tmdb_id=target_tmdb_id,
             media_type=media_type,
             season=s,
             episode=e,
+            title=title,
+            year=year,
         )
     except Exception as ex:
         err_msg = str(ex)

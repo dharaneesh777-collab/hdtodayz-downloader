@@ -335,12 +335,20 @@ function closeWafModal() {
   }
 }
 
-async function checkStreamAvailability(tmdbId, mediaType, season = 1, episode = 1) {
+async function checkStreamAvailability(tmdbId, mediaType, season = 1, episode = 1, title = '', year = '') {
   if (parseInt(tmdbId) === 999999) {
     return { available: true };
   }
   try {
-    const res = await fetch('/api/stream/check?tmdb_id=' + tmdbId + '&media_type=' + mediaType + '&season=' + season + '&episode=' + episode);
+    const params = new URLSearchParams({
+      tmdb_id: tmdbId,
+      media_type: mediaType,
+      season: season,
+      episode: episode,
+      title: title || '',
+      year: year || '',
+    });
+    const res = await fetch('/api/stream/check?' + params.toString());
     return await res.json();
   } catch (e) {
     return { available: false, error: e.message, is_waf_blocked: false };
@@ -402,7 +410,7 @@ async function triggerDirectDownload(previewSeconds = null) {
     // Preflight stream check on first episode
     const firstEp = sortedEpisodes[0];
     showToast('🔍 Verifying stream connectivity...', 'info');
-    const check = await checkStreamAvailability(media.tmdb_id, 'tv', season, firstEp.episode_number);
+    const check = await checkStreamAvailability(media.tmdb_id, 'tv', season, firstEp.episode_number, media.title, media.year);
     if (!check.available) {
       if (check.is_waf_blocked) {
         showToast('⚠️ Upstream server blocked cloud IP. Launching demo stream options...', 'warning');
@@ -439,7 +447,7 @@ async function triggerDirectDownload(previewSeconds = null) {
     }
   } else {
     showToast('🔍 Verifying stream connectivity...', 'info');
-    const check = await checkStreamAvailability(media.tmdb_id, 'movie', 1, 1);
+    const check = await checkStreamAvailability(media.tmdb_id, 'movie', 1, 1, media.title, media.year);
     if (!check.available) {
       if (check.is_waf_blocked) {
         showToast('⚠️ Upstream server blocked cloud IP. Launching demo stream options...', 'warning');

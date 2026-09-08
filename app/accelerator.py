@@ -31,11 +31,13 @@ class HLSSession:
         aud_segments: List[str],
         client: aiohttp.ClientSession,
         prefetch_ahead: int = 24,
+        init_bytes: Optional[bytes] = None,
     ):
         self.sid = sid
         self.vid_m3u8 = vid_m3u8
         self.aud_m3u8 = aud_m3u8
         self.key_bytes = key_bytes
+        self.init_bytes = init_bytes
         self.vid_segments = vid_segments
         self.aud_segments = aud_segments
         self.client = client
@@ -244,7 +246,7 @@ class HLSAcceleratorManager:
                 async with client.get(chosen_aud_url, timeout=aiohttp.ClientTimeout(total=15)) as r:
                     raw_aud_text = await r.text()
 
-            # 4. Fetch encryption key if referenced
+            # 4. Fetch encryption key or init segment if referenced
             key_bytes = None
             key_match = re.search(r'#EXT-X-KEY:METHOD=AES-128,URI="([^"]+)"', raw_vid_text)
             if key_match:
@@ -256,6 +258,18 @@ class HLSAcceleratorManager:
                             key_bytes = await r.read()
                 except Exception as e:
                     logger.warning(f"Could not fetch key: {e}")
+
+            init_bytes = None
+            map_match = re.search(r'#EXT-X-MAP:URI="([^"]+)"', raw_vid_text)
+            if map_match:
+                map_uri = map_match.group(1)
+                map_url = urllib.parse.urljoin(chosen_vid_url, map_uri)
+                try:
+                    async with client.get(map_url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                        if r.status == 200:
+                            init_bytes = await r.read()
+                except Exception as e:
+                    logger.warning(f"Could not fetch init map segment: {e}")
 
             # 5. Build rewritten playlists
             vid_segs: List[str] = []
@@ -276,6 +290,16 @@ class HLSAcceleratorManager:
                     iv_match = re.search(r"IV=([0-9a-zA-Zx]+)", line_s)
                     iv_part = f",IV={iv_match.group(1)}" if iv_match else ""
                     rewritten_vid_lines.append(f'#EXT-X-KEY:METHOD=AES-128,URI="{loopback}/api/hls_accel/{sid}/key"{iv_part}')
+                elif line_s.startswith("#EXT-X-MAP:"):
+                    map_m = re.search(r'URI="([^"]+)"', line_s)
+                    if map_m:
+                        if init_bytes:
+                            rewritten_vid_lines.append(f'#EXT-X-MAP:URI="{loopback}/api/hls_accel/{sid}/init.mp4"')
+                        else:
+                            abs_map = urllib.parse.urljoin(chosen_vid_url, map_m.group(1))
+                            rewritten_vid_lines.append(f'#EXT-X-MAP:URI="{abs_map}"')
+                    else:
+                        rewritten_vid_lines.append(line_s)
                 elif not line_s.startswith("#"):
                     if max_segs is None or v_idx < max_segs:
                         seg_url = urllib.parse.urljoin(chosen_vid_url, line_s)
@@ -299,6 +323,13 @@ class HLSAcceleratorManager:
                         iv_match = re.search(r"IV=([0-9a-zA-Zx]+)", line_s)
                         iv_part = f",IV={iv_match.group(1)}" if iv_match else ""
                         rewritten_aud_lines.append(f'#EXT-X-KEY:METHOD=AES-128,URI="{loopback}/api/hls_accel/{sid}/key"{iv_part}')
+                    elif line_s.startswith("#EXT-X-MAP:"):
+                        map_m = re.search(r'URI="([^"]+)"', line_s)
+                        if map_m:
+                            abs_map = urllib.parse.urljoin(chosen_aud_url, map_m.group(1))
+                            rewritten_aud_lines.append(f'#EXT-X-MAP:URI="{abs_map}"')
+                        else:
+                            rewritten_aud_lines.append(line_s)
                     elif not line_s.startswith("#"):
                         if max_segs is None or a_idx < max_segs:
                             seg_url = urllib.parse.urljoin(chosen_aud_url, line_s)
@@ -320,6 +351,7 @@ class HLSAcceleratorManager:
                 aud_segments=aud_segs,
                 client=client,
                 prefetch_ahead=concurrency,
+                init_bytes=init_bytes,
             )
             self.sessions[sid] = session
 
