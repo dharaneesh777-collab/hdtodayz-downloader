@@ -258,9 +258,13 @@ async def api_debug_upstream(tmdb_id: int = 1418, s: int = 1, e: int = 1):
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
                 text = await r.text()
                 res["aiohttp"] = {"status": r.status, "headers": dict(r.headers), "body": text[:400]}
+    try:
+        from curl_cffi import requests as cffi_requests
+        cffi_res = cffi_requests.get(url, headers=headers, impersonate="chrome124", timeout=10)
+        res["curl_cffi"] = {"status": cffi_res.status_code, "headers": dict(cffi_res.headers), "body": cffi_res.text[:400]}
     except Exception as ex:
-        res["aiohttp"] = {"error": str(ex)}
-        
+        res["curl_cffi"] = {"error": str(ex)}
+
     return res
 
 
