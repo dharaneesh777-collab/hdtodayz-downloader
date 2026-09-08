@@ -2,6 +2,7 @@
 HDTodayz Video Downloader - Startup Launcher
 """
 
+import os
 import sys
 import asyncio
 from pathlib import Path
