@@ -1,0 +1,514 @@
+"""
+HDTodayz Stream & Metadata Extractor
+Handles URL resolution, TMDB metadata enrichment, and multi-server HLS stream extraction.
+"""
+
+import re
+import json
+import logging
+import urllib.request
+import urllib.parse
+import urllib.error
+from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger("hdtoday.extractor")
+logging.basicConfig(level=logging.INFO)
+
+TMDB_API_KEY = "7b9720202f99648b367a5474d01c5d0e"
+DEFAULT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def _http_get(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 15) -> str:
+    """Helper to perform HTTP GET requests with custom headers."""
+    req_headers = dict(DEFAULT_HEADERS)
+    if headers:
+        req_headers.update(headers)
+    req = urllib.request.Request(url, headers=req_headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def _http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 15) -> Any:
+    """Helper to fetch and parse JSON."""
+    raw = _http_get(url, headers=headers, timeout=timeout)
+    return json.loads(raw)
+
+
+def check_stream_available(
+    tmdb_id: int,
+    media_type: str = "movie",
+    season: int = 1,
+    episode: int = 1,
+) -> bool:
+    """
+    Quickly probe VixSrc API to verify if media stream is active and hosted on the server.
+    Returns True if an active stream is returned, False otherwise (e.g. 404, unreleased placeholder).
+    """
+    try:
+        if media_type == "tv":
+            api_url = f"https://vixsrc.to/api/tv/{tmdb_id}/{season}/{episode}"
+            referer = f"https://vixsrc.to/tv/{tmdb_id}/{season}/{episode}"
+        else:
+            api_url = f"https://vixsrc.to/api/movie/{tmdb_id}"
+            referer = f"https://vixsrc.to/movie/{tmdb_id}"
+
+        headers = {
+            "Referer": referer,
+            "User-Agent": DEFAULT_HEADERS["User-Agent"],
+        }
+        api_resp = _http_get_json(api_url, headers=headers, timeout=5)
+        return bool(api_resp and api_resp.get("src"))
+    except Exception:
+        return False
+
+
+def parse_url_target(input_str: str) -> Dict[str, Any]:
+    """
+    Parse a user-supplied string, which may be:
+    - HDTodayz URL:
+      - https://hdtodayz.org/movie/mayday
+      - https://hdtodayz.org/watch/movie/1137844/mayday
+      - https://hdtodayz.org/tv/silo
+      - https://hdtodayz.org/watch/tv/125988/silo
+      - https://hdtodayz.org/home
+    - Direct TMDB ID: e.g. 1137844
+    - Search query: e.g. "Silo" or "Mayday"
+    """
+    input_str = input_str.strip()
+
+    # Direct TMDB ID
+    if input_str.isdigit():
+        return {"type": "tmdb_id", "tmdb_id": int(input_str), "media_type": "movie"}
+
+    # HDTodayz Watch URL with ID: /watch/(movie|tv)/(\d+)(?:/([^/?#]+))?
+    watch_match = re.search(r"/(?:watch/)?(movie|tv)/(\d+)(?:/([^/?#]+))?", input_str)
+    if watch_match:
+        m_type = watch_match.group(1)
+        tmdb_id = int(watch_match.group(2))
+        slug = watch_match.group(3) or ""
+        return {
+            "type": "hdtoday_watch",
+            "media_type": m_type,
+            "tmdb_id": tmdb_id,
+            "slug": slug,
+            "url": input_str if input_str.startswith("http") else f"https://hdtodayz.org/watch/{m_type}/{tmdb_id}/{slug}",
+        }
+
+    # HDTodayz Slug URL: /(movie|tv)/([^/?#]+)
+    slug_match = re.search(r"hdtodayz\.org/(movie|tv)/([^/?#]+)", input_str)
+    if slug_match:
+        m_type = slug_match.group(1)
+        slug = slug_match.group(2)
+        return {
+            "type": "hdtoday_slug",
+            "media_type": m_type,
+            "slug": slug,
+            "url": input_str if input_str.startswith("http") else f"https://hdtodayz.org/{m_type}/{slug}",
+        }
+
+    # Homepage or Browse URL
+    if "hdtodayz.org" in input_str:
+        return {"type": "hdtoday_browse", "url": input_str}
+
+    # Otherwise treat as search query
+    return {"type": "search_query", "query": input_str}
+
+
+def resolve_media_info(target_input: str) -> Dict[str, Any]:
+    """
+    Resolve complete metadata (TMDB ID, title, overview, poster, seasons/episodes)
+    from an HDTodayz URL or search string.
+    """
+    parsed = parse_url_target(target_input)
+    tmdb_id = parsed.get("tmdb_id")
+    media_type = parsed.get("media_type", "movie")
+    slug = parsed.get("slug")
+
+    # If we have an HDTodayz slug URL without TMDB ID, scrape the page to get TMDB ID
+    if parsed["type"] == "hdtoday_slug":
+        url = parsed["url"]
+        try:
+            html = _http_get(url)
+            # Find watch link or TMDB ID
+            watch_link_match = re.search(r'href="(/watch/(?:movie|tv)/(\d+)/[^"]+)"', html)
+            if watch_link_match:
+                tmdb_id = int(watch_link_match.group(2))
+            else:
+                # Try finding from schema.org JSON-LD
+                id_matches = re.findall(r'"significantLinks":\s*\["/watch/(?:movie|tv)/(\d+)', html)
+                if id_matches:
+                    tmdb_id = int(id_matches[0])
+        except Exception as e:
+            logger.warning(f"Failed to fetch HDTodayz page {url}: {e}")
+
+    # If still no TMDB ID, search TMDB for the slug or query
+    if not tmdb_id:
+        query = slug.replace("-", " ") if slug else parsed.get("query", target_input)
+        search_res = search_media(query)
+        if search_res:
+            top_match = search_res[0]
+            tmdb_id = top_match["id"]
+            media_type = top_match["media_type"]
+        else:
+            raise ValueError(f"Could not identify movie or TV show from input: {target_input}")
+
+    # Now enrich metadata via TMDB API
+    tmdb_endpoint = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids,credits,videos"
+    data = _http_get_json(tmdb_endpoint)
+
+    title = data.get("title") or data.get("name") or "Unknown Title"
+
+    # Verify whether VixSrc has an active stream for this TMDB ID
+    stream_available = check_stream_available(tmdb_id, media_type, season=1, episode=1)
+    if not stream_available:
+        logger.warning(
+            f"TMDB ID {tmdb_id} ('{title}') has no active stream on VixSrc. Searching for verified working releases..."
+        )
+        candidates = search_media(title)
+        for cand in candidates:
+            c_id = cand["id"]
+            c_type = cand["media_type"]
+            if c_id != tmdb_id and c_type == media_type:
+                if check_stream_available(c_id, c_type, season=1, episode=1):
+                    logger.info(
+                        f"Auto-routed unhosted release {tmdb_id} to verified working release: "
+                        f"TMDB ID {c_id} ('{cand['title']}' {cand['year']})"
+                    )
+                    tmdb_id = c_id
+                    # Re-fetch metadata with verified working ID
+                    tmdb_endpoint = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids,credits,videos"
+                    data = _http_get_json(tmdb_endpoint)
+                    title = data.get("title") or data.get("name") or title
+                    stream_available = True
+                    break
+
+    release_date = data.get("release_date") or data.get("first_air_date") or ""
+    year = release_date[:4] if release_date else ""
+    overview = data.get("overview") or ""
+    poster_path = data.get("poster_path")
+    backdrop_path = data.get("backdrop_path")
+    poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
+    backdrop_url = f"https://image.tmdb.org/t/p/w1280{backdrop_path}" if backdrop_path else ""
+    genres = [g["name"] for g in data.get("genres", [])]
+    vote_average = round(data.get("vote_average", 0), 1)
+    runtime = data.get("runtime") or (data.get("episode_run_time", [0])[0] if data.get("episode_run_time") else 0)
+
+    result: Dict[str, Any] = {
+        "tmdb_id": tmdb_id,
+        "media_type": media_type,
+        "title": title,
+        "year": year,
+        "release_date": release_date,
+        "overview": overview,
+        "poster_url": poster_url,
+        "backdrop_url": backdrop_url,
+        "genres": genres,
+        "rating": vote_average,
+        "runtime_minutes": runtime,
+        "stream_available": stream_available,
+        "hdtoday_url": (
+            f"https://hdtodayz.org/watch/{media_type}/{tmdb_id}"
+        ),
+    }
+
+    # If TV show, fetch season and episode details
+    if media_type == "tv":
+        seasons_data = []
+        raw_seasons = data.get("seasons", [])
+        for s in raw_seasons:
+            s_num = s.get("season_number")
+            if s_num is None or s_num == 0:
+                continue  # Skip specials by default
+            ep_count = s.get("episode_count", 0)
+            seasons_data.append({
+                "season_number": s_num,
+                "name": s.get("name") or f"Season {s_num}",
+                "episode_count": ep_count,
+                "episodes": [],  # lazy or populated on request
+            })
+        result["seasons"] = seasons_data
+        result["number_of_seasons"] = data.get("number_of_seasons", len(seasons_data))
+        result["number_of_episodes"] = data.get("number_of_episodes", 0)
+
+    return result
+
+
+def fetch_tv_season_episodes(tmdb_id: int, season_number: int) -> List[Dict[str, Any]]:
+    """Fetch episode list for a specific season of a TV show."""
+    endpoint = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season_number}?api_key={TMDB_API_KEY}"
+    try:
+        data = _http_get_json(endpoint)
+        episodes = []
+        for ep in data.get("episodes", []):
+            episodes.append({
+                "episode_number": ep.get("episode_number"),
+                "name": ep.get("name") or f"Episode {ep.get('episode_number')}",
+                "overview": ep.get("overview") or "",
+                "air_date": ep.get("air_date") or "",
+                "still_url": f"https://image.tmdb.org/t/p/w300{ep['still_path']}" if ep.get("still_path") else "",
+                "rating": round(ep.get("vote_average", 0), 1),
+            })
+        return episodes
+    except Exception as e:
+        logger.error(f"Error fetching season {season_number} for TV {tmdb_id}: {e}")
+        return []
+
+
+def extract_vixsrc_stream(
+    tmdb_id: int,
+    media_type: str = "movie",
+    season: int = 1,
+    episode: int = 1,
+) -> Dict[str, Any]:
+    """
+    Extract HLS stream information from VixSrc (HDTodayz primary server).
+    Returns playlist URL, available video formats, audio tracks, and headers.
+    """
+    if media_type == "tv":
+        api_url = f"https://vixsrc.to/api/tv/{tmdb_id}/{season}/{episode}"
+        referer = f"https://vixsrc.to/tv/{tmdb_id}/{season}/{episode}"
+    else:
+        api_url = f"https://vixsrc.to/api/movie/{tmdb_id}"
+        referer = f"https://vixsrc.to/movie/{tmdb_id}"
+
+    headers = {
+        "Referer": referer,
+        "User-Agent": DEFAULT_HEADERS["User-Agent"],
+    }
+
+    # Step 1: Call VixSrc API
+    try:
+        api_resp = _http_get_json(api_url, headers=headers)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise ValueError(
+                f"Stream not hosted on server (HTTP 404). "
+                f"This {'episode' if media_type == 'tv' else 'movie'} is not currently available on the HDTodayz streaming server."
+            )
+        raise ValueError(f"Streaming server error: HTTP {e.code} {e.reason}")
+    except Exception as e:
+        raise ValueError(f"Failed to connect to streaming server: {e}")
+
+    embed_path = api_resp.get("src")
+    if not embed_path:
+        raise ValueError(f"VixSrc API did not return stream source: {api_resp}")
+
+    embed_url = "https://vixsrc.to" + embed_path
+
+    # Step 2: Fetch embed page
+    try:
+        embed_html = _http_get(embed_url, headers=headers)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise ValueError("Stream embed page not found on server (HTTP 404).")
+        raise ValueError(f"Stream embed server error: HTTP {e.code} {e.reason}")
+
+    # Step 3: Extract master playlist info
+    token_m = re.search(r"'token':\s*'([^']+)'", embed_html)
+    expires_m = re.search(r"'expires':\s*'([^']+)'", embed_html)
+    url_m = re.search(r"url:\s*'([^']+)'", embed_html)
+
+    if not (token_m and expires_m and url_m):
+        # Fallback regex without quotes
+        token_m = re.search(r"token:\s*['\"]([^'\"]+)['\"]", embed_html)
+        expires_m = re.search(r"expires:\s*['\"]([^'\"]+)['\"]", embed_html)
+        url_m = re.search(r"url:\s*['\"]([^'\"]+)['\"]", embed_html)
+
+    if not (token_m and expires_m and url_m):
+        raise ValueError("Failed to extract master playlist token from embed page.")
+
+    token = token_m.group(1)
+    expires = expires_m.group(1)
+    base_playlist_url = url_m.group(1)
+
+    sep = "&" if "?" in base_playlist_url else "?"
+    master_playlist_url = f"{base_playlist_url}{sep}token={token}&expires={expires}&h=1"
+
+    # Step 4: Fetch Master Playlist to discover available streams
+    master_headers = {
+        "Referer": "https://vixsrc.to/",
+        "User-Agent": DEFAULT_HEADERS["User-Agent"],
+    }
+    try:
+        playlist_text = _http_get(master_playlist_url, headers=master_headers)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise ValueError("Master HLS playlist not found on server (HTTP 404).")
+        raise ValueError(f"Playlist server error: HTTP {e.code} {e.reason}")
+
+    # Parse qualities, audio, and subtitles from M3U8
+    video_qualities = []
+    audio_tracks = []
+    subtitles = []
+
+    for line in playlist_text.splitlines():
+        line = line.strip()
+        if line.startswith("#EXT-X-STREAM-INF:"):
+            # e.g. BANDWIDTH=1800000,RESOLUTION=1280x720,AUDIO="audio",SUBTITLES="subs"
+            res_m = re.search(r"RESOLUTION=(\d+x\d+)", line)
+            bw_m = re.search(r"BANDWIDTH=(\d+)", line)
+            resolution = res_m.group(1) if res_m else "Unknown"
+            height = resolution.split("x")[1] if "x" in resolution else "720"
+            video_qualities.append({
+                "resolution": resolution,
+                "label": f"{height}p",
+                "bandwidth": int(bw_m.group(1)) if bw_m else 0,
+            })
+        elif line.startswith("#EXT-X-MEDIA:TYPE=AUDIO"):
+            # e.g. NAME="English",LANGUAGE="eng",URI="..."
+            name_m = re.search(r'NAME="([^"]+)"', line)
+            lang_m = re.search(r'LANGUAGE="([^"]+)"', line)
+            name = name_m.group(1) if name_m else "Default"
+            lang = lang_m.group(1) if lang_m else "und"
+            audio_tracks.append({"name": name, "language": lang})
+        elif line.startswith("#EXT-X-MEDIA:TYPE=SUBTITLES"):
+            name_m = re.search(r'NAME="([^"]+)"', line)
+            lang_m = re.search(r'LANGUAGE="([^"]+)"', line)
+            uri_m = re.search(r'URI="([^"]+)"', line)
+            def_m = re.search(r'DEFAULT=(YES|NO)', line)
+            forced_m = re.search(r'FORCED=(YES|NO)', line)
+            name = name_m.group(1) if name_m else "Sub"
+            lang = lang_m.group(1) if lang_m else "und"
+            uri = uri_m.group(1) if uri_m else ""
+            if uri and not uri.startswith("http"):
+                uri = urllib.parse.urljoin(master_playlist_url, uri)
+            subtitles.append({
+                "name": name,
+                "language": lang,
+                "uri": uri,
+                "default": def_m.group(1) == "YES" if def_m else False,
+                "forced": forced_m.group(1) == "YES" if forced_m else False,
+            })
+
+    # Sort video qualities highest first
+    video_qualities.sort(key=lambda q: q["bandwidth"], reverse=True)
+
+    return {
+        "server": "Server 1 (VixSrc)",
+        "master_playlist_url": master_playlist_url,
+        "video_qualities": video_qualities,
+        "audio_tracks": audio_tracks,
+        "subtitles": subtitles,
+        "http_headers": {
+            "Referer": "https://vixsrc.to/",
+            "User-Agent": DEFAULT_HEADERS["User-Agent"],
+        },
+    }
+
+
+def search_media(query: str) -> List[Dict[str, Any]]:
+    """
+    Search HDTodayz and TMDB for matching titles.
+    """
+    query = query.strip()
+    if not query:
+        return []
+
+    encoded = urllib.parse.quote(query)
+    endpoint = f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={encoded}&include_adult=false"
+
+    try:
+        data = _http_get_json(endpoint)
+        results = []
+        for item in data.get("results", []):
+            m_type = item.get("media_type")
+            if m_type not in ("movie", "tv"):
+                continue
+
+            tmdb_id = item.get("id")
+            title = item.get("title") or item.get("name") or "Untitled"
+            rel_date = item.get("release_date") or item.get("first_air_date") or ""
+            year = rel_date[:4] if rel_date else ""
+            poster_path = item.get("poster_path")
+            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
+            backdrop_path = item.get("backdrop_path")
+            backdrop_url = f"https://image.tmdb.org/t/p/w1280{backdrop_path}" if backdrop_path else ""
+
+            vote_count = item.get("vote_count", 0)
+            popularity = item.get("popularity", 0.0)
+
+            results.append({
+                "id": tmdb_id,
+                "title": title,
+                "media_type": m_type,
+                "year": year,
+                "release_date": rel_date,
+                "overview": item.get("overview") or "",
+                "poster_url": poster_url,
+                "backdrop_url": backdrop_url,
+                "rating": round(item.get("vote_average", 0), 1),
+                "vote_count": vote_count,
+                "popularity": popularity,
+                "hdtoday_url": f"https://hdtodayz.org/watch/{m_type}/{tmdb_id}",
+            })
+
+        # Rank results: prioritize exact title match, established release (>15 votes), popularity, and vote count
+        q_norm = query.strip().lower()
+        results.sort(
+            key=lambda x: (
+                x["title"].strip().lower() == q_norm,
+                x.get("vote_count", 0) > 15,
+                x.get("popularity", 0.0),
+                x.get("vote_count", 0),
+            ),
+            reverse=True,
+        )
+        return results
+    except Exception as e:
+        logger.error(f"Search error for '{query}': {e}")
+        return []
+
+
+def get_trending_catalog() -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Fetch trending movies and TV shows currently featured on HDTodayz / TMDB.
+    """
+    endpoint = f"https://api.themoviedb.org/3/trending/all/day?api_key={TMDB_API_KEY}"
+    try:
+        data = _http_get_json(endpoint)
+        movies = []
+        tv_shows = []
+
+        for item in data.get("results", []):
+            m_type = item.get("media_type")
+            if m_type not in ("movie", "tv"):
+                continue
+
+            tmdb_id = item.get("id")
+            title = item.get("title") or item.get("name") or "Untitled"
+            rel_date = item.get("release_date") or item.get("first_air_date") or ""
+            year = rel_date[:4] if rel_date else ""
+            poster_path = item.get("poster_path")
+            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
+            backdrop_path = item.get("backdrop_path")
+            backdrop_url = f"https://image.tmdb.org/t/p/w1280{backdrop_path}" if backdrop_path else ""
+
+            entry = {
+                "id": tmdb_id,
+                "title": title,
+                "media_type": m_type,
+                "year": year,
+                "release_date": rel_date,
+                "overview": item.get("overview") or "",
+                "poster_url": poster_url,
+                "backdrop_url": backdrop_url,
+                "rating": round(item.get("vote_average", 0), 1),
+                "hdtoday_url": f"https://hdtodayz.org/watch/{m_type}/{tmdb_id}",
+            }
+
+            if m_type == "movie":
+                movies.append(entry)
+            else:
+                tv_shows.append(entry)
+
+        return {"movies": movies, "tv": tv_shows}
+    except Exception as e:
+        logger.error(f"Error fetching trending catalog: {e}")
+        return {"movies": [], "tv": []}

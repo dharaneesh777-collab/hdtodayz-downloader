@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0b0e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>HDTodayz Video Downloader - Automated HD Stream Downloader</title>
+  <link rel="stylesheet" href="/static/css/style.css?v=mobile2">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23e50914'><polygon points='5 3 19 12 5 21 5 3'/></svg>">
+</head>
+<body>
+
+  <!-- Header -->
+  <header>
+    <div class="header-container">
+      <a href="#" class="logo-area" onclick="switchTab('tab-catalog')">
+        <div class="logo-badge">HD</div>
+        <div>
+          <div class="logo-text">TODAYZ <span style="color:var(--accent-red)">DOWNLOADER</span></div>
+          <div class="logo-sub">Direct Video Downloader</div>
+        </div>
+      </a>
+
+      <nav class="nav-tabs">
+        <button class="tab-btn active" id="btn-tab-catalog" onclick="switchTab('tab-catalog')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="15" x="2" y="7" rx="2" ry="2"></rect><polyline points="17 2 12 7 7 2"></polyline></svg>
+          <span class="tab-label">Browse Movies</span>
+        </button>
+        <button class="tab-btn" id="btn-tab-downloader" onclick="switchTab('tab-downloader')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <span class="tab-label">Search / Link</span>
+        </button>
+      </nav>
+
+      <div class="status-pill">
+        <div class="pulse-dot"></div>
+        <span class="status-text">Direct Chrome Downloads</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main>
+    
+    <!-- Tab 1: URL Downloader & Inspector -->
+    <div id="tab-downloader" class="tab-pane">
+      <div class="hero-box">
+        <h1 class="hero-title">Download Movies & TV Shows from HDTodayz</h1>
+        <p class="hero-subtitle">Paste any HDTodayz link or title. The automated engine extracts master HLS playlists and downloads full HD MP4 video with multi-language audio.</p>
+      </div>
+
+      <div class="url-card">
+        <div class="input-group">
+          <input type="text" id="url-input" class="url-input" placeholder="Paste HDTodayz URL e.g. https://hdtodayz.org/movie/mayday or https://hdtodayz.org/tv/silo" autofocus>
+          <button class="btn-primary" id="resolve-btn" onclick="handleResolve()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            Analyze Video
+          </button>
+        </div>
+
+        <div class="quick-samples">
+          <span>Quick samples:</span>
+          <button class="sample-chip" onclick="loadSample('https://hdtodayz.org/movie/mayday')">🎬 Mayday (2026)</button>
+          <button class="sample-chip" onclick="loadSample('https://hdtodayz.org/tv/silo')">📺 Silo (TV Series)</button>
+          <button class="sample-chip" onclick="loadSample('https://hdtodayz.org/movie/the-runner')">🎬 The Runner (2026)</button>
+          <button class="sample-chip" onclick="loadSample('https://hdtodayz.org/movie/mutiny')">🎬 Mutiny (2026)</button>
+          <button class="sample-chip" onclick="loadSample('Gladiator')">🔍 Search: Gladiator</button>
+        </div>
+      </div>
+
+      <!-- Media Inspector Details Card -->
+      <div id="media-inspector" class="media-inspector">
+        <div id="media-backdrop" class="media-backdrop"></div>
+        <div class="media-body">
+          <div class="poster-box">
+            <img id="media-poster" class="poster-img" src="" alt="Poster">
+          </div>
+          <div class="media-info">
+            <div class="media-title-row">
+              <h2 id="media-title" class="media-title">Title</h2>
+              <span id="media-year" class="media-year">(2026)</span>
+            </div>
+
+            <div class="meta-badges">
+              <span id="badge-type" class="badge badge-type">MOVIE</span>
+              <span id="badge-rating" class="badge badge-rating">⭐ 7.5</span>
+              <span id="badge-runtime" class="badge">110 min</span>
+              <span id="badge-genres" class="badge">Action, Drama</span>
+            </div>
+
+            <p id="media-overview" class="media-overview">Overview text here...</p>
+
+            <!-- Download Settings -->
+            <div class="download-config-box">
+              <!-- TV Series Season & Episode Picker -->
+              <div id="tv-controls" class="tv-controls-box" style="display:none;">
+                <div class="tv-header-row">
+                  <div class="config-row" style="margin-bottom: 0; flex: 1;">
+                    <span class="config-label">Season:</span>
+                    <select id="season-select" class="dropdown-select" onchange="handleSeasonChange()">
+                      <!-- Populated dynamically -->
+                    </select>
+                  </div>
+                  <div class="tv-quick-actions">
+                    <button type="button" class="btn-action-small" onclick="selectAllEpisodes()">✓ Select All</button>
+                    <button type="button" class="btn-action-small" onclick="deselectAllEpisodes()">✕ Clear</button>
+                    <span id="selected-ep-count" class="ep-count-badge">0 selected</span>
+                  </div>
+                </div>
+
+                <!-- Multi-Episode Selection Grid -->
+                <div class="episodes-selector-wrapper">
+                  <div class="episodes-grid" id="episodes-grid">
+                    <!-- Checkbox cards populated dynamically -->
+                  </div>
+                </div>
+              </div>
+
+              <!-- Quality Selection -->
+              <div class="config-row">
+                <span class="config-label">Quality:</span>
+                <div class="config-options" id="quality-options">
+                  <button class="select-chip active" data-quality="best" onclick="selectQuality(this)">Best Available</button>
+                  <button class="select-chip" data-quality="1080p" onclick="selectQuality(this)">1080p FHD</button>
+                  <button class="select-chip" data-quality="720p" onclick="selectQuality(this)">720p HD</button>
+                  <button class="select-chip" data-quality="480p" onclick="selectQuality(this)">480p SD</button>
+                </div>
+              </div>
+
+              <!-- Audio Selection -->
+              <div class="config-row">
+                <span class="config-label">Audio:</span>
+                <div class="config-options" id="audio-options">
+                  <button class="select-chip active" data-lang="eng" onclick="selectAudio(this)">English</button>
+                  <button class="select-chip" data-lang="ita" onclick="selectAudio(this)">Italian</button>
+                  <button class="select-chip" data-lang="und" onclick="selectAudio(this)">Default Track</button>
+                </div>
+              </div>
+
+              <!-- Subtitle Selection -->
+              <div class="config-row">
+                <span class="config-label">Subtitles:</span>
+                <div class="config-options" id="sub-options">
+                  <button class="select-chip active" data-sub="eng" onclick="selectSubtitle(this)">💬 English (Auto)</button>
+                  <button class="select-chip" data-sub="all" onclick="selectSubtitle(this)">🌐 All Languages</button>
+                  <button class="select-chip" data-sub="none" onclick="selectSubtitle(this)">🚫 None</button>
+                </div>
+              </div>
+
+              <!-- Speed Multi-Threading Mode -->
+              <div class="config-row">
+                <span class="config-label">Speed Mode:</span>
+                <div class="config-options" id="thread-options">
+                  <button class="select-chip active" data-threads="16" onclick="selectThreads(this)">⚡ 16x Turbo (Max Speed)</button>
+                  <button class="select-chip" data-threads="8" onclick="selectThreads(this)">🚀 8x High-Speed</button>
+                  <button class="select-chip" data-threads="4" onclick="selectThreads(this)">🛡️ 4x Balanced</button>
+                </div>
+              </div>
+
+              <!-- Master Download Actions -->
+              <div style="display: flex; gap: 0.75rem; margin-top: 0.5rem; flex-wrap: wrap;">
+                <button id="btn-master-download" class="btn-download-master" style="flex: 2; min-width: 220px;" onclick="triggerDirectDownload()">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                  <div style="display:flex; flex-direction:column; align-items:flex-start; line-height:1.2;">
+                    <span id="btn-master-text" style="font-weight:700; font-size:1.05rem;">Download to This Device (MP4)</span>
+                    <span style="font-size:0.72rem; opacity:0.85; font-weight:400;">Saves directly to your browser Downloads</span>
+                  </div>
+                </button>
+                <button id="btn-stream-online" class="btn-secondary" style="flex: 1; min-width: 170px; justify-content: center; font-size: 0.92rem; border-color: rgba(229, 9, 20, 0.5); color: #fff;" onclick="openStreamInModal()">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                  Watch Online
+                </button>
+                <button id="btn-preview-download" class="btn-secondary" style="flex: 1; min-width: 160px; justify-content: center; font-size: 0.9rem; border-color: rgba(0, 210, 255, 0.4); color: var(--accent-cyan);" onclick="triggerDirectDownload(30)">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>
+                  Quick 30s Sample
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 2: Catalog & Search (Default Home) -->
+    <div id="tab-catalog" class="tab-pane active">
+      <div style="max-width: 860px; margin: 0 auto 2.5rem auto;">
+        <div class="input-group">
+          <input type="text" id="catalog-search-input" class="url-input" placeholder="Search HDTodayz for any movie or TV show title..." onkeyup="if(event.key==='Enter') executeCatalogSearch()">
+          <button class="btn-primary" onclick="executeCatalogSearch()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            Search
+          </button>
+        </div>
+      </div>
+
+      <!-- Search Results Area -->
+      <div id="search-results-section" style="display:none;" class="catalog-section">
+        <div class="section-header">
+          <h2 class="section-title">🔍 Search Results</h2>
+          <button class="btn-secondary" onclick="clearSearchResults()">Clear Search</button>
+        </div>
+        <div id="search-results-grid" class="catalog-grid"></div>
+      </div>
+
+      <!-- Trending Movies Section -->
+      <div class="catalog-section">
+        <div class="section-header">
+          <h2 class="section-title">🔥 Trending Movies on HDTodayz</h2>
+        </div>
+        <div id="trending-movies-grid" class="catalog-grid">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+
+      <!-- Trending TV Series Section -->
+      <div class="catalog-section">
+        <div class="section-header">
+          <h2 class="section-title">📺 Popular TV Series on HDTodayz</h2>
+        </div>
+        <div id="trending-tv-grid" class="catalog-grid">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- HTML5 Modal Video Player -->
+  <div id="video-modal" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span id="modal-video-title" class="modal-title">Watching Video</span>
+        <button class="modal-close-btn" onclick="closeModalPlayer()">&times;</button>
+      </div>
+      <div class="modal-video-wrap">
+        <video id="modal-video-player" class="modal-video" controls autoplay playsinline preload="metadata"></video>
+      </div>
+      <div class="modal-footer" style="padding: 0.8rem 1.2rem; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-color); background: rgba(0,0,0,0.4); flex-wrap:wrap; gap:0.5rem;">
+        <div style="font-size: 0.85rem; color: var(--text-muted);">
+          HD Stream • Seeking Supported
+        </div>
+        <div style="display: flex; gap: 0.5rem;">
+          <button id="modal-btn-play-local" class="btn-secondary" style="padding: 0.45rem 0.85rem; font-size: 0.85rem; color: #60a5fa; border-color: rgba(96,165,250,0.35);">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            Play in Windows Player
+          </button>
+          <a id="modal-btn-download" href="#" download class="btn-primary" style="padding: 0.45rem 0.85rem; font-size: 0.85rem;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            Save File
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notifications -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/static/js/app.js?v=mobile2"></script>
+</body>
+</html>

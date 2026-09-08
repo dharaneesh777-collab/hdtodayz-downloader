@@ -1,0 +1,14 @@
+﻿downloads/*
+!downloads/.gitkeep
+cache/*
+!cache/.gitkeep
+__pycache__/
+*.py[cod]
+*.class
+*.log
+.env
+.DS_Store
+*.mp4
+*.mkv
+*.part
+*.ytdl
