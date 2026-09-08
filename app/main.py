@@ -227,21 +227,18 @@ async def api_hls_accel_aud_seg(sid: str, idx: int):
 
 
 @app.get("/api/debug-upstream")
-async def api_debug_upstream(tmdb_id: int = 1418, s: int = 1, e: int = 1):
+async def api_debug_upstream(tmdb_id: int = 1418, s: int = 1, e: int = 1, custom_url: Optional[str] = None):
     import urllib.request, urllib.error
     import aiohttp
     
-    url = f"https://vixsrc.to/api/tv/{tmdb_id}/{s}/{e}"
+    url = custom_url if custom_url else f"https://vixsrc.to/api/tv/{tmdb_id}/{s}/{e}"
     res = {"target": url}
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Referer": f"https://vixsrc.to/tv/{tmdb_id}/{s}/{e}",
-        "Origin": "https://vixsrc.to",
-        "Accept": "application/json, text/plain, */*",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
+        "Referer": "https://www.vidking.net/" if "speedrace" in url or "vidking" in url else f"https://vixsrc.to/tv/{tmdb_id}/{s}/{e}",
+        "Origin": "https://www.vidking.net" if "speedrace" in url or "vidking" in url else "https://vixsrc.to",
+        "Accept": "*/*",
     }
     
     try:
