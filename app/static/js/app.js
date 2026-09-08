@@ -317,6 +317,36 @@ function selectThreads(btn) {
 // Direct In-Browser (Chrome) Download Engine
 // =============================================================================
 
+function showWafBlockedModal(message) {
+  const modal = document.getElementById('waf-modal');
+  const textEl = document.getElementById('waf-modal-text');
+  if (textEl && message) {
+    textEl.textContent = message;
+  }
+  if (modal) {
+    modal.classList.add('show');
+  }
+}
+
+function closeWafModal() {
+  const modal = document.getElementById('waf-modal');
+  if (modal) {
+    modal.classList.remove('show');
+  }
+}
+
+async function checkStreamAvailability(tmdbId, mediaType, season = 1, episode = 1) {
+  if (parseInt(tmdbId) === 999999) {
+    return { available: true };
+  }
+  try {
+    const res = await fetch('/api/stream/check?tmdb_id=' + tmdbId + '&media_type=' + mediaType + '&season=' + season + '&episode=' + episode);
+    return await res.json();
+  } catch (e) {
+    return { available: false, error: e.message, is_waf_blocked: false };
+  }
+}
+
 function triggerBrowserDownload(url) {
   // Isolated hidden iframe ensures multiple simultaneous downloads in Chrome without canceling each other
   const iframe = document.createElement('iframe');
@@ -351,7 +381,7 @@ function buildDownloadStreamUrl(options = {}) {
   return '/api/download/stream?' + params.toString();
 }
 
-function triggerDirectDownload(previewSeconds = null) {
+async function triggerDirectDownload(previewSeconds = null) {
   if (!state.currentMedia) {
     showToast('Please resolve a movie or series first', 'warning');
     return;
@@ -368,6 +398,20 @@ function triggerDirectDownload(previewSeconds = null) {
     const sortedEpisodes = Array.from(state.selectedEpisodes.values()).sort(
       (a, b) => a.episode_number - b.episode_number
     );
+
+    // Preflight stream check on first episode
+    const firstEp = sortedEpisodes[0];
+    showToast('🔍 Verifying stream connectivity...', 'info');
+    const check = await checkStreamAvailability(media.tmdb_id, 'tv', season, firstEp.episode_number);
+    if (!check.available) {
+      if (check.is_waf_blocked) {
+        showToast('⚠️ Upstream server blocked cloud IP. Launching demo stream options...', 'warning');
+        showWafBlockedModal(check.message);
+      } else {
+        showToast('⚠️ ' + (check.message || check.error || 'Stream unavailable'), 'danger');
+      }
+      return;
+    }
 
     if (sortedEpisodes.length === 1 || previewSeconds) {
       const ep = sortedEpisodes[0];
@@ -394,6 +438,18 @@ function triggerDirectDownload(previewSeconds = null) {
       });
     }
   } else {
+    showToast('🔍 Verifying stream connectivity...', 'info');
+    const check = await checkStreamAvailability(media.tmdb_id, 'movie', 1, 1);
+    if (!check.available) {
+      if (check.is_waf_blocked) {
+        showToast('⚠️ Upstream server blocked cloud IP. Launching demo stream options...', 'warning');
+        showWafBlockedModal(check.message);
+      } else {
+        showToast('⚠️ ' + (check.message || check.error || 'Stream unavailable'), 'danger');
+      }
+      return;
+    }
+
     const url = buildDownloadStreamUrl({ previewSeconds });
     triggerBrowserDownload(url);
     const label = previewSeconds ? '30s sample preview' : 'full MP4 movie';
@@ -401,9 +457,22 @@ function triggerDirectDownload(previewSeconds = null) {
   }
 }
 
-function triggerDirectDownloadEpisode(epNum, epTitle) {
+async function triggerDirectDownloadEpisode(epNum, epTitle) {
   if (!state.currentMedia) return;
   const season = parseInt(el.seasonSelect.value) || 1;
+
+  showToast('🔍 Verifying stream connectivity...', 'info');
+  const check = await checkStreamAvailability(state.currentMedia.tmdb_id, 'tv', season, epNum);
+  if (!check.available) {
+    if (check.is_waf_blocked) {
+      showToast('⚠️ Upstream server blocked cloud IP. Launching demo stream options...', 'warning');
+      showWafBlockedModal(check.message);
+    } else {
+      showToast('⚠️ ' + (check.message || check.error || 'Stream unavailable'), 'danger');
+    }
+    return;
+  }
+
   const url = buildDownloadStreamUrl({
     season,
     episode: epNum,
@@ -443,7 +512,13 @@ async function playStreamModal(tmdbId, mediaType, season, episode, title) {
     const res = await fetch('/api/stream-info?tmdb_id=' + tmdbId + '&media_type=' + mediaType + '&season=' + season + '&episode=' + episode);
     const data = await res.json();
     if (!data.success || !data.stream_info || !data.stream_info.master_playlist_url) {
-      throw new Error('Stream unavailable for online playback.');
+      const err = data.error || 'Stream unavailable for online playback.';
+      if (err.includes('403') || err.includes('Cloudflare') || err.includes('datacenter')) {
+        showToast('⚠️ Upstream server blocked cloud IP. Launching demo stream options...', 'warning');
+        showWafBlockedModal(err);
+        return;
+      }
+      throw new Error(err);
     }
 
     el.modalVideoTitle.textContent = title;

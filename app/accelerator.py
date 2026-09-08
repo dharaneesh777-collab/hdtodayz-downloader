@@ -10,6 +10,7 @@ import math
 import uuid
 import asyncio
 import logging
+import urllib.parse
 from typing import Optional, Dict, List, Tuple
 import aiohttp
 
@@ -170,16 +171,22 @@ class HLSAcceleratorManager:
             audio_tracks: List[Dict[str, str]] = []
 
             curr_stream_inf = None
+            is_master = False
             for line in lines:
                 line_str = line.strip()
+                if not line_str:
+                    continue
                 if line_str.startswith("#EXT-X-STREAM-INF:"):
                     curr_stream_inf = line_str
-                elif curr_stream_inf and line_str.startswith("http"):
+                    is_master = True
+                elif curr_stream_inf and not line_str.startswith("#"):
                     res_match = re.search(r"RESOLUTION=(\d+)x(\d+)", curr_stream_inf)
                     height = int(res_match.group(2)) if res_match else 720
-                    video_variants.append((height, line_str))
+                    full_sub_url = urllib.parse.urljoin(master_url, line_str)
+                    video_variants.append((height, full_sub_url))
                     curr_stream_inf = None
                 elif line_str.startswith("#EXT-X-MEDIA:TYPE=AUDIO"):
+                    is_master = True
                     attrs = {}
                     for match in re.finditer(r'([A-Z\-]+)=(?:"([^"]*)"|([^,]*))', line_str):
                         k = match.group(1)
@@ -188,7 +195,8 @@ class HLSAcceleratorManager:
                     audio_tracks.append(attrs)
 
             if not video_variants:
-                raise RuntimeError("No video streams found in master playlist")
+                # If master_url points directly to a single rendition/media playlist
+                video_variants = [(1080, master_url)]
 
             video_variants.sort(key=lambda x: x[0], reverse=True)
             chosen_vid_url = video_variants[0][1]
@@ -220,11 +228,16 @@ class HLSAcceleratorManager:
                             break
                     if not target_track:
                         target_track = audio_tracks[0]
-                chosen_aud_url = target_track.get("URI")
+                raw_aud_uri = target_track.get("URI")
+                if raw_aud_uri:
+                    chosen_aud_url = urllib.parse.urljoin(master_url, raw_aud_uri)
 
             # 3. Fetch rendition playlists
-            async with client.get(chosen_vid_url, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                raw_vid_text = await r.text()
+            if chosen_vid_url == master_url:
+                raw_vid_text = master_text
+            else:
+                async with client.get(chosen_vid_url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                    raw_vid_text = await r.text()
 
             raw_aud_text = None
             if chosen_aud_url:
@@ -236,15 +249,13 @@ class HLSAcceleratorManager:
             key_match = re.search(r'#EXT-X-KEY:METHOD=AES-128,URI="([^"]+)"', raw_vid_text)
             if key_match:
                 key_uri = key_match.group(1)
-                if key_uri.startswith("/"):
-                    key_url = f"https://vixsrc.to{key_uri}"
-                elif key_uri.startswith("http"):
-                    key_url = key_uri
-                else:
-                    key_url = f"https://vixsrc.to/{key_uri}"
-                async with client.get(key_url, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                    if r.status == 200:
-                        key_bytes = await r.read()
+                key_url = urllib.parse.urljoin(chosen_vid_url, key_uri)
+                try:
+                    async with client.get(key_url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                        if r.status == 200:
+                            key_bytes = await r.read()
+                except Exception as e:
+                    logger.warning(f"Could not fetch key: {e}")
 
             # 5. Build rewritten playlists
             vid_segs: List[str] = []
@@ -258,38 +269,46 @@ class HLSAcceleratorManager:
             rewritten_vid_lines = []
             v_idx = 0
             for l in raw_vid_text.splitlines():
-                if l.startswith("#EXT-X-KEY:METHOD=AES-128"):
-                    iv_match = re.search(r"IV=([0-9a-zA-Zx]+)", l)
+                line_s = l.strip()
+                if not line_s:
+                    continue
+                if line_s.startswith("#EXT-X-KEY:METHOD=AES-128"):
+                    iv_match = re.search(r"IV=([0-9a-zA-Zx]+)", line_s)
                     iv_part = f",IV={iv_match.group(1)}" if iv_match else ""
                     rewritten_vid_lines.append(f'#EXT-X-KEY:METHOD=AES-128,URI="{loopback}/api/hls_accel/{sid}/key"{iv_part}')
-                elif l.startswith("http"):
+                elif not line_s.startswith("#"):
                     if max_segs is None or v_idx < max_segs:
-                        vid_segs.append(l.strip())
+                        seg_url = urllib.parse.urljoin(chosen_vid_url, line_s)
+                        vid_segs.append(seg_url)
                         rewritten_vid_lines.append(f"{loopback}/api/hls_accel/{sid}/v/{v_idx}.ts")
                         v_idx += 1
-                elif l.startswith("#EXT-X-ENDLIST"):
+                elif line_s.startswith("#EXT-X-ENDLIST"):
                     continue
                 else:
-                    rewritten_vid_lines.append(l)
+                    rewritten_vid_lines.append(line_s)
             rewritten_vid_lines.append("#EXT-X-ENDLIST")
 
             rewritten_aud_lines = []
             if raw_aud_text:
                 a_idx = 0
                 for l in raw_aud_text.splitlines():
-                    if l.startswith("#EXT-X-KEY:METHOD=AES-128"):
-                        iv_match = re.search(r"IV=([0-9a-zA-Zx]+)", l)
+                    line_s = l.strip()
+                    if not line_s:
+                        continue
+                    if line_s.startswith("#EXT-X-KEY:METHOD=AES-128"):
+                        iv_match = re.search(r"IV=([0-9a-zA-Zx]+)", line_s)
                         iv_part = f",IV={iv_match.group(1)}" if iv_match else ""
                         rewritten_aud_lines.append(f'#EXT-X-KEY:METHOD=AES-128,URI="{loopback}/api/hls_accel/{sid}/key"{iv_part}')
-                    elif l.startswith("http"):
+                    elif not line_s.startswith("#"):
                         if max_segs is None or a_idx < max_segs:
-                            aud_segs.append(l.strip())
+                            seg_url = urllib.parse.urljoin(chosen_aud_url, line_s)
+                            aud_segs.append(seg_url)
                             rewritten_aud_lines.append(f"{loopback}/api/hls_accel/{sid}/a/{a_idx}.ts")
                             a_idx += 1
-                    elif l.startswith("#EXT-X-ENDLIST"):
+                    elif line_s.startswith("#EXT-X-ENDLIST"):
                         continue
                     else:
-                        rewritten_aud_lines.append(l)
+                        rewritten_aud_lines.append(line_s)
                 rewritten_aud_lines.append("#EXT-X-ENDLIST")
 
             session = HLSSession(

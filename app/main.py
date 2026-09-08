@@ -258,6 +258,9 @@ async def api_debug_upstream(tmdb_id: int = 1418, s: int = 1, e: int = 1):
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
                 text = await r.text()
                 res["aiohttp"] = {"status": r.status, "headers": dict(r.headers), "body": text[:400]}
+    except Exception as ex:
+        res["aiohttp"] = {"error": str(ex)}
+
     try:
         from curl_cffi import requests as cffi_requests
         cffi_res = cffi_requests.get(url, headers=headers, impersonate="chrome124", timeout=10)
@@ -266,6 +269,37 @@ async def api_debug_upstream(tmdb_id: int = 1418, s: int = 1, e: int = 1):
         res["curl_cffi"] = {"error": str(ex)}
 
     return res
+
+
+@app.get("/api/stream/check")
+async def api_check_stream(
+    tmdb_id: int = Query(...),
+    media_type: str = Query("movie"),
+    season: int = Query(1),
+    episode: int = Query(1),
+):
+    """Preflight check to verify if a stream is accessible from this server."""
+    try:
+        stream_info = extract_vixsrc_stream(tmdb_id, media_type, season, episode)
+        return {
+            "available": True,
+            "server": stream_info.get("server", "VixSrc"),
+            "qualities": [q.get("label") for q in stream_info.get("video_qualities", [])],
+        }
+    except Exception as ex:
+        msg = str(ex)
+        is_waf = "403" in msg or "Cloudflare" in msg or "datacenter" in msg.lower() or "Forbidden" in msg
+        return {
+            "available": False,
+            "error": msg,
+            "is_waf_blocked": is_waf,
+            "message": (
+                "Upstream streaming host blocked cloud datacenter IP (Cloudflare WAF HTTP 403). "
+                "Cloud platforms (Render / AWS) are restricted by the third-party host. "
+                "You can test high-speed downloading, in-flight MP4 remuxing, and multi-episode parallel downloads right now using the built-in 'Demo Showcase'!"
+                if is_waf else msg
+            ),
+        }
 
 
 @app.get("/api/download/stream")
@@ -296,7 +330,7 @@ async def api_direct_stream_download(
     e = episode if episode else 1
 
     target_tmdb_id = tmdb_id
-    if not check_stream_available(target_tmdb_id, media_type, s, e):
+    if target_tmdb_id != 999999 and not check_stream_available(target_tmdb_id, media_type, s, e):
         candidates = search_media(title)
         for cand in candidates:
             if cand["id"] != target_tmdb_id and cand["media_type"] == media_type:
@@ -312,6 +346,44 @@ async def api_direct_stream_download(
             episode=e,
         )
     except Exception as ex:
+        err_msg = str(ex)
+        if "403" in err_msg or "Cloudflare" in err_msg or "Forbidden" in err_msg:
+            return HTMLResponse(
+                content="""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                  <title>Stream Restricted on Cloud Datacenter</title>
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                  <style>
+                    body { background: #0b0f19; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1.5rem; box-sizing: border-box; }
+                    .card { background: #1a2234; border: 1px solid #334155; border-radius: 14px; max-width: 540px; padding: 2.2rem; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.6); }
+                    .icon { font-size: 3rem; margin-bottom: 0.5rem; }
+                    h2 { color: #f87171; margin: 0 0 1rem; font-size: 1.4rem; }
+                    p { color: #94a3b8; font-size: 0.95rem; line-height: 1.6; margin: 0 0 1.2rem; }
+                    .tip-box { background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 8px; padding: 1rem; text-align: left; margin-bottom: 1.5rem; }
+                    .tip-title { color: #38bdf8; font-weight: bold; font-size: 0.9rem; margin-bottom: 0.4rem; }
+                    .tip-desc { color: #cbd5e1; font-size: 0.85rem; margin: 0; line-height: 1.5; }
+                    .btn { display: inline-flex; align-items: center; gap: 8px; background: #2563eb; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: 600; font-size: 0.95rem; transition: background 0.2s; }
+                    .btn:hover { background: #1d4ed8; }
+                  </style>
+                </head>
+                <body>
+                  <div class="card">
+                    <div class="icon">🛡️</div>
+                    <h2>Upstream Host Restricted on Cloud Datacenter</h2>
+                    <p>The third-party streaming server blocks automated cloud datacenter IP addresses (Render / AWS) via Cloudflare WAF.</p>
+                    <div class="tip-box">
+                      <div class="tip-title">💡 How to test all features right now:</div>
+                      <div class="tip-desc">You can test high-speed multi-worker downloading, simultaneous parallel episode downloads, and real-time MP4 remuxing using the built-in <strong>Demo Stream Showcase</strong>!</div>
+                    </div>
+                    <a href="/?resolve=demo" class="btn">🧪 Launch Working Demo Stream</a>
+                  </div>
+                </body>
+                </html>
+                """,
+                status_code=403,
+            )
         raise HTTPException(status_code=500, detail=f"Could not extract stream: {ex}")
 
     master_playlist_url = stream_info["master_playlist_url"]

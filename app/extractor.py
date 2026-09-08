@@ -41,6 +41,61 @@ def _http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: 
     return json.loads(raw)
 
 
+DEMO_MEDIA_ID = 999999
+DEMO_MEDIA_DATA = {
+    "tmdb_id": DEMO_MEDIA_ID,
+    "media_type": "tv",
+    "title": "Big Buck Bunny (HLS Test Showcase)",
+    "year": "2024",
+    "release_date": "2024-01-01",
+    "overview": "Official high-speed HLS demo showcase stream (Blender Foundation). 100% reliable for testing multi-worker prefetching, simultaneous multi-episode downloads, 1080p/720p/480p quality selection, and in-flight MP4 remuxing on any cloud provider without datacenter blocks.",
+    "poster_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c5/Big_buck_bunny_poster_big.jpg/600px-Big_buck_bunny_poster_big.jpg",
+    "backdrop_url": "https://peach.blender.org/wp-content/uploads/bbb-splash.png",
+    "genres": ["Animation", "Action", "Demo Showcase"],
+    "rating": 9.9,
+    "runtime_minutes": 10,
+    "stream_available": True,
+    "hdtoday_url": "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+    "seasons": [
+        {
+            "season_number": 1,
+            "name": "Season 1 (Demo Episodes)",
+            "episode_count": 3,
+            "episodes": [],
+        }
+    ],
+    "number_of_seasons": 1,
+    "number_of_episodes": 3,
+}
+
+DEMO_EPISODES = [
+    {
+        "episode_number": 1,
+        "name": "The Forest Awakening (High Speed Test)",
+        "overview": "First segment showcase testing turbo multi-worker fragment streaming and in-flight MP4 remuxing.",
+        "air_date": "2024-01-01",
+        "still_url": "https://peach.blender.org/wp-content/uploads/bbb-splash.png",
+        "rating": 9.8,
+    },
+    {
+        "episode_number": 2,
+        "name": "The Rabbit's Revenge (Parallel Download Test)",
+        "overview": "Second segment showcase testing simultaneous parallel episode downloading in Chrome.",
+        "air_date": "2024-01-02",
+        "still_url": "https://peach.blender.org/wp-content/uploads/bbb-splash.png",
+        "rating": 9.7,
+    },
+    {
+        "episode_number": 3,
+        "name": "Flight of the Butterfly (Full Showcase)",
+        "overview": "Third segment showcase testing 1080p HD bitstream parsing and real-time audio multiplexing.",
+        "air_date": "2024-01-03",
+        "still_url": "https://peach.blender.org/wp-content/uploads/bbb-splash.png",
+        "rating": 9.9,
+    },
+]
+
+
 def check_stream_available(
     tmdb_id: int,
     media_type: str = "movie",
@@ -51,6 +106,8 @@ def check_stream_available(
     Quickly probe VixSrc API to verify if media stream is active and hosted on the server.
     Returns True if an active stream is returned, False otherwise (e.g. 404, unreleased placeholder).
     """
+    if tmdb_id == DEMO_MEDIA_ID:
+        return True
     try:
         if media_type == "tv":
             api_url = f"https://vixsrc.to/api/tv/{tmdb_id}/{season}/{episode}"
@@ -82,6 +139,10 @@ def parse_url_target(input_str: str) -> Dict[str, Any]:
     - Search query: e.g. "Silo" or "Mayday"
     """
     input_str = input_str.strip()
+
+    # Demo or Test Trigger
+    if input_str.lower() in ("demo", "test", "sample", "demo showcase", "999999", "big buck bunny"):
+        return {"type": "demo", "tmdb_id": DEMO_MEDIA_ID, "media_type": "tv"}
 
     # Direct TMDB ID
     if input_str.isdigit():
@@ -130,6 +191,9 @@ def resolve_media_info(target_input: str) -> Dict[str, Any]:
     tmdb_id = parsed.get("tmdb_id")
     media_type = parsed.get("media_type", "movie")
     slug = parsed.get("slug")
+
+    if tmdb_id == DEMO_MEDIA_ID or parsed.get("type") == "demo":
+        return dict(DEMO_MEDIA_DATA)
 
     # If we have an HDTodayz slug URL without TMDB ID, scrape the page to get TMDB ID
     if parsed["type"] == "hdtoday_slug":
@@ -242,6 +306,9 @@ def resolve_media_info(target_input: str) -> Dict[str, Any]:
 
 def fetch_tv_season_episodes(tmdb_id: int, season_number: int) -> List[Dict[str, Any]]:
     """Fetch episode list for a specific season of a TV show."""
+    if tmdb_id == DEMO_MEDIA_ID:
+        return list(DEMO_EPISODES)
+
     endpoint = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season_number}?api_key={TMDB_API_KEY}"
     try:
         data = _http_get_json(endpoint)
@@ -271,6 +338,22 @@ def extract_vixsrc_stream(
     Extract HLS stream information from VixSrc (HDTodayz primary server).
     Returns playlist URL, available video formats, audio tracks, and headers.
     """
+    if tmdb_id == DEMO_MEDIA_ID:
+        return {
+            "server": "Demo Stream Server (Mux Open HLS)",
+            "master_playlist_url": "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+            "video_qualities": [
+                {"resolution": "1920x1080", "label": "1080p", "bandwidth": 6221600},
+                {"resolution": "1280x720", "label": "720p", "bandwidth": 2149280},
+                {"resolution": "848x480", "label": "480p", "bandwidth": 836280},
+            ],
+            "audio_tracks": [{"name": "English", "language": "eng"}],
+            "subtitles": [],
+            "http_headers": {
+                "User-Agent": DEFAULT_HEADERS["User-Agent"],
+            },
+        }
+
     if media_type == "tv":
         api_url = f"https://vixsrc.to/api/tv/{tmdb_id}/{season}/{episode}"
         referer = f"https://vixsrc.to/tv/{tmdb_id}/{season}/{episode}"
@@ -291,6 +374,13 @@ def extract_vixsrc_stream(
             raise ValueError(
                 f"Stream not hosted on server (HTTP 404). "
                 f"This {'episode' if media_type == 'tv' else 'movie'} is not currently available on the HDTodayz streaming server."
+            )
+        elif e.code == 403:
+            raise ValueError(
+                f"Upstream provider blocked datacenter IP (Cloudflare WAF HTTP 403). "
+                f"Cloud platforms (Render/AWS) are restricted by the third-party host. "
+                f"Please use the built-in 'Test Demo Stream' to test all downloader features, "
+                f"or run the server locally on a residential ISP network."
             )
         raise ValueError(f"Streaming server error: HTTP {e.code} {e.reason}")
     except Exception as e:
@@ -460,6 +550,24 @@ def search_media(query: str) -> List[Dict[str, Any]]:
             ),
             reverse=True,
         )
+
+        if any(k in q_norm for k in ("demo", "test", "bunny", "sample", "showcase")):
+            demo_search_item = {
+                "id": DEMO_MEDIA_ID,
+                "title": "Big Buck Bunny (HLS Test Showcase)",
+                "media_type": "tv",
+                "year": "2024",
+                "release_date": "2024-01-01",
+                "overview": "Official 100% reliable demo stream for testing speed and simultaneous downloads.",
+                "poster_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c5/Big_buck_bunny_poster_big.jpg/600px-Big_buck_bunny_poster_big.jpg",
+                "backdrop_url": "https://peach.blender.org/wp-content/uploads/bbb-splash.png",
+                "rating": 9.9,
+                "vote_count": 9999,
+                "popularity": 9999.0,
+                "hdtoday_url": "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+            }
+            results.insert(0, demo_search_item)
+
         return results
     except Exception as e:
         logger.error(f"Search error for '{query}': {e}")
@@ -475,6 +583,21 @@ def get_trending_catalog() -> Dict[str, List[Dict[str, Any]]]:
         data = _http_get_json(endpoint)
         movies = []
         tv_shows = []
+
+        # Feature Demo Showcase for 100% reliable cloud testing
+        demo_entry = {
+            "id": DEMO_MEDIA_ID,
+            "title": "Big Buck Bunny (🧪 Cloud Test Stream)",
+            "media_type": "tv",
+            "year": "2024",
+            "release_date": "2024-01-01",
+            "overview": "Official 100% reliable HLS demo stream. Use this to test high-speed MP4 downloads, simultaneous multi-episode downloads, and real-time remuxing without datacenter blocks.",
+            "poster_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c5/Big_buck_bunny_poster_big.jpg/600px-Big_buck_bunny_poster_big.jpg",
+            "backdrop_url": "https://peach.blender.org/wp-content/uploads/bbb-splash.png",
+            "rating": 9.9,
+            "hdtoday_url": "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+        }
+        tv_shows.append(demo_entry)
 
         for item in data.get("results", []):
             m_type = item.get("media_type")
